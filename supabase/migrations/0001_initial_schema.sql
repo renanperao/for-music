@@ -72,8 +72,11 @@ create table public.orders (
   status            order_status not null default 'OPEN',
 
   -- Integração Asaas
+  -- asaas_payment_id : id da cobrança PIX/cartão criada no checkout
+  -- asaas_transfer_id: id da PIX Transfer disparada na liberação (90% pro músico)
   asaas_payment_id  text,
-  asaas_split_id    text,
+  asaas_transfer_id text,
+  released_at       timestamptz, -- quando a PIX Transfer foi disparada
 
   -- Controle de revisões: máximo 2 (regra de negócio)
   revision_count    smallint not null default 0 check (revision_count between 0 and 2),

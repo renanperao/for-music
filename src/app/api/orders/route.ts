@@ -1,73 +1,28 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { ZodError } from 'zod';
+import { z } from 'zod';
 
-import { createServerClient } from '@/lib/supabase/server';
+import { requireUser, requireRole } from '@/lib/auth';
+import { jsonOk, parseJson, withErrorHandling } from '@/lib/http';
 import { createOrderSchema } from '@/lib/validations/orders';
+import type { OrderStatus } from '@/types/database';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST(req: NextRequest) {
-  const supabase = createServerClient();
+// ─────────────────────────────────────────────────────────────────────
+// POST /api/orders
+// Contratante cria um novo pedido (status OPEN).
+// ─────────────────────────────────────────────────────────────────────
+export const POST = withErrorHandling(async (req: NextRequest) => {
+  const { supabase, userId, profile } = await requireUser();
+  requireRole(profile, 'contractor', 'both');
 
-  // 1) Autenticação (RLS exige sessão; checamos cedo para 401 explícito)
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+  const input = await parseJson(req, createOrderSchema);
 
-  if (authError || !user) {
-    return NextResponse.json({ error: 'Não autenticado' }, { status: 401 });
-  }
-
-  // 2) Parse do body
-  let raw: unknown;
-  try {
-    raw = await req.json();
-  } catch {
-    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
-  }
-
-  // 3) Validação Zod
-  let input;
-  try {
-    input = createOrderSchema.parse(raw);
-  } catch (err) {
-    if (err instanceof ZodError) {
-      return NextResponse.json(
-        { error: 'Dados inválidos', details: err.flatten() },
-        { status: 422 },
-      );
-    }
-    throw err;
-  }
-
-  // 4) Sanity check: o autor precisa de perfil contractor/both
-  const { data: profile, error: profileErr } = await supabase
-    .from('users')
-    .select('role')
-    .eq('id', user.id)
-    .single();
-
-  if (profileErr || !profile) {
-    return NextResponse.json(
-      { error: 'Perfil não encontrado' },
-      { status: 403 },
-    );
-  }
-
-  if (profile.role !== 'contractor' && profile.role !== 'both') {
-    return NextResponse.json(
-      { error: 'Apenas contratantes podem criar pedidos' },
-      { status: 403 },
-    );
-  }
-
-  // 5) Insert (RLS reforça contractor_id = auth.uid())
-  const { data: order, error: insertErr } = await supabase
+  const { data: order, error } = await supabase
     .from('orders')
     .insert({
-      contractor_id: user.id,
+      contractor_id: userId,
       title: input.title,
       instrument: input.instrument,
       style: input.style,
@@ -80,12 +35,68 @@ export async function POST(req: NextRequest) {
     .select()
     .single();
 
-  if (insertErr || !order) {
+  if (error || !order) {
     return NextResponse.json(
-      { error: 'Falha ao criar pedido', details: insertErr?.message },
+      { error: 'Falha ao criar pedido', details: error?.message },
       { status: 500 },
     );
   }
 
-  return NextResponse.json({ order }, { status: 201 });
-}
+  return jsonOk({ order }, 201);
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// GET /api/orders
+// - Sem filtro: musician/both vê OPEN; contractor vê os próprios.
+// - ?scope=mine: somente os pedidos onde o usuário é parte (contractor
+//   ou musician aceitante). Útil pro dashboard.
+// - ?status=PAID: filtra por status (combina com scope).
+// ─────────────────────────────────────────────────────────────────────
+const listQuerySchema = z.object({
+  scope: z.enum(['open', 'mine']).optional(),
+  status: z
+    .enum(['OPEN', 'ACCEPTED', 'PAID', 'DELIVERED', 'IN_REVISION', 'COMPLETED', 'DISPUTED'])
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export const GET = withErrorHandling(async (req: NextRequest) => {
+  const { supabase, userId, profile } = await requireUser();
+
+  const url = new URL(req.url);
+  const params = listQuerySchema.parse({
+    scope: url.searchParams.get('scope') ?? undefined,
+    status: url.searchParams.get('status') ?? undefined,
+    limit: url.searchParams.get('limit') ?? undefined,
+  });
+
+  let query = supabase
+    .from('orders')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(params.limit);
+
+  if (params.scope === 'mine') {
+    query = query.or(`contractor_id.eq.${userId},musician_id.eq.${userId}`);
+  } else if (params.scope === 'open') {
+    query = query.eq('status', 'OPEN' satisfies OrderStatus);
+  } else {
+    // Default: musician/both vê OPEN; contractor puro vê só os seus
+    if (profile.role === 'contractor') {
+      query = query.eq('contractor_id', userId);
+    } else {
+      query = query.or(`status.eq.OPEN,contractor_id.eq.${userId},musician_id.eq.${userId}`);
+    }
+  }
+
+  if (params.status) {
+    query = query.eq('status', params.status);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    return NextResponse.json({ error: 'Falha ao listar', details: error.message }, { status: 500 });
+  }
+
+  return jsonOk({ orders: data ?? [] });
+});

@@ -75,7 +75,8 @@ export interface Database {
           budget_cents: number;
           status: OrderStatus;
           asaas_payment_id: string | null;
-          asaas_split_id: string | null;
+          asaas_transfer_id: string | null;
+          released_at: string | null;
           revision_count: number;
           accepted_at: string | null;
           paid_at: string | null;
@@ -98,7 +99,8 @@ export interface Database {
           budget_cents: number;
           status?: OrderStatus;
           asaas_payment_id?: string | null;
-          asaas_split_id?: string | null;
+          asaas_transfer_id?: string | null;
+          released_at?: string | null;
           revision_count?: number;
           accepted_at?: string | null;
           paid_at?: string | null;
