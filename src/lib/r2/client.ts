@@ -20,8 +20,8 @@ function client(): S3Client {
     region: 'auto',
     endpoint: `https://${r2.accountId}.r2.cloudflarestorage.com`,
     credentials: {
-      accessKeyId: r2.accessKeyId,
-      secretAccessKey: r2.secretAccessKey,
+      accessKeyId: r2.accessKeyId as string,
+      secretAccessKey: r2.secretAccessKey as string,
     },
   });
   return cached;
